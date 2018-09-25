@@ -16,7 +16,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
-
+#include <linux/ctype.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -693,7 +693,6 @@ static int fwu_wait_for_idle(int timeout_ms)
 static enum flash_area fwu_go_nogo(void)
 {
 	int retval = 0;
-	int index = 0;
 	int deviceFirmwareID;
 	int imageConfigID;
 	int deviceConfigID;
@@ -796,6 +795,7 @@ static enum flash_area fwu_go_nogo(void)
 			flash_area = UI_FIRMWARE;
 			goto exit;
 		}
+		size_t index, max_index;
 		strptr = strnstr(fwu->image_name, "PR",
 				sizeof(fwu->image_name));
 		if (!strptr) {
@@ -805,8 +805,11 @@ static enum flash_area fwu_go_nogo(void)
 			goto exit;
 		}
 
+		max_index = min((ptrdiff_t)(MAX_FIRMWARE_ID_LEN - 1),
+				&fwu->firmware_name[NAME_BUFFER_SIZE] - strptr);
+		index = 0;
 		strptr += 2;
-		while (strptr[index] >= '0' && strptr[index] <= '9') {
+		while (index < max_index && isdigit(strptr[index])) {
 			imagePR[index] = strptr[index];
 			index++;
 		}
@@ -2189,6 +2192,14 @@ static int synaptics_rmi4_fwu_init(struct synaptics_rmi4_data *rmi4_data)
 	fwu->initialized = true;
 	fwu->polling_mode = false;
 
+#ifdef INSIDE_FIRMWARE_UPDATE
+	fwu->fwu_workqueue = create_singlethread_workqueue("fwu_workqueue");
+	INIT_DELAYED_WORK(&fwu->fwu_work, synaptics_rmi4_fwu_work);
+	queue_delayed_work(fwu->fwu_workqueue,
+			&fwu->fwu_work,
+			msecs_to_jiffies(1000));
+#endif
+
 	retval = sysfs_create_bin_file(&rmi4_data->i2c_client->dev.kobj,
 			&dev_attr_data);
 	if (retval < 0) {
@@ -2228,14 +2239,6 @@ static int synaptics_rmi4_fwu_init(struct synaptics_rmi4_data *rmi4_data)
 	}
 
 	synaptics_rmi4_update_debug_info();
-
-#ifdef INSIDE_FIRMWARE_UPDATE
-	fwu->fwu_workqueue = create_singlethread_workqueue("fwu_workqueue");
-	INIT_DELAYED_WORK(&fwu->fwu_work, synaptics_rmi4_fwu_work);
-	queue_delayed_work(fwu->fwu_workqueue,
-			&fwu->fwu_work,
-			msecs_to_jiffies(1000));
-#endif
 
 	return 0;
 exit_free_ts_info:

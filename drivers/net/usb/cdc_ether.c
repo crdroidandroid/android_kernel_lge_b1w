@@ -128,7 +128,13 @@ int usbnet_generic_cdc_bind(struct usbnet *dev, struct usb_interface *intf)
 
 	memset(info, 0, sizeof *info);
 	info->control = intf;
-	while (len > 3) {
+	while (len > 0) {
+
+		if ((len < buf [0]) || (buf [0] < 3)) {
+			dev_dbg(&intf->dev, "invalid descriptor buffer length\n");
+			goto bad_desc;
+		}
+
 		if (buf [1] != USB_DT_CS_INTERFACE)
 			goto next_desc;
 
@@ -617,6 +623,11 @@ static const struct usb_device_id	products [] = {
 	.bInterfaceSubClass	= USB_CDC_SUBCLASS_ETHERNET,
 	.bInterfaceProtocol	= USB_CDC_PROTO_NONE,
 	.driver_info = (unsigned long)&wwan_info,
+}, {
+	/* Telit modules */
+	USB_VENDOR_AND_INTERFACE_INFO(0x1bc7, USB_CLASS_COMM,
+			USB_CDC_SUBCLASS_ETHERNET, USB_CDC_PROTO_NONE),
+	.driver_info = (kernel_ulong_t) &wwan_info,
 }, {
 	USB_INTERFACE_INFO(USB_CLASS_COMM, USB_CDC_SUBCLASS_ETHERNET,
 			USB_CDC_PROTO_NONE),

@@ -556,6 +556,15 @@ static long msm_private_ioctl(struct file *file, void *fh,
 	event_data = (struct msm_v4l2_event_data *)
 		((struct v4l2_event *)arg)->u.data;
 
+	switch(cmd) {
+	case MSM_CAM_V4L2_IOCTL_NOTIFY:
+	case MSM_CAM_V4L2_IOCTL_CMD_ACK:
+	case MSM_CAM_V4L2_IOCTL_NOTIFY_ERROR:
+		break;
+	default:
+		return -ENOTTY;
+	}
+
 	session_id = event_data->session_id;
 	stream_id = event_data->stream_id;
 
@@ -818,10 +827,8 @@ static int msm_open(struct file *filep)
 	BUG_ON(!pvdev);
 
 	/* !!! only ONE open is allowed !!! */
-	if (atomic_read(&pvdev->opened))
+	if (atomic_cmpxchg(&pvdev->opened, 0, 1))
 		return -EBUSY;
-
-	atomic_set(&pvdev->opened, 1);
 
 	spin_lock_irqsave(&msm_pid_lock, flags);
 	msm_pid = get_pid(task_pid(current));

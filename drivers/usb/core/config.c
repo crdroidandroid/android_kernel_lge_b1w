@@ -114,16 +114,18 @@ static void usb_parse_ss_endpoint_companion(struct device *ddev, int cfgno,
 				cfgno, inum, asnum, ep->desc.bEndpointAddress);
 		ep->ss_ep_comp.bmAttributes = 16;
 	} else if (usb_endpoint_xfer_isoc(&ep->desc) &&
-			desc->bmAttributes > 2) {
+		   USB_SS_MULT(desc->bmAttributes) > 3) {
 		dev_warn(ddev, "Isoc endpoint has Mult of %d in "
 				"config %d interface %d altsetting %d ep %d: "
-				"setting to 3\n", desc->bmAttributes + 1,
+				"setting to 3\n",
+				USB_SS_MULT(desc->bmAttributes),
 				cfgno, inum, asnum, ep->desc.bEndpointAddress);
 		ep->ss_ep_comp.bmAttributes = 2;
 	}
 
 	if (usb_endpoint_xfer_isoc(&ep->desc))
-		max_tx = (desc->bMaxBurst + 1) * (desc->bmAttributes + 1) *
+		max_tx = (desc->bMaxBurst + 1) *
+			(USB_SS_MULT(desc->bmAttributes)) *
 			usb_endpoint_maxp(&ep->desc);
 	else if (usb_endpoint_xfer_int(&ep->desc))
 		max_tx = usb_endpoint_maxp(&ep->desc) *
@@ -201,6 +203,17 @@ static int usb_parse_endpoint(struct device *ddev, int cfgno, int inum,
 			if (n == 0)
 				n = 9;	/* 32 ms = 2^(9-1) uframes */
 			j = 16;
+
+			/*
+			 * Adjust bInterval for quirked devices.
+			 * This quirk fixes bIntervals reported in
+			 * linear microframes.
+			 */
+			if (to_usb_device(ddev)->quirks &
+				USB_QUIRK_LINEAR_UFRAME_INTR_BINTERVAL) {
+				n = clamp(fls(d->bInterval), i, j);
+				i = j = n;
+			}
 			break;
 		default:		/* USB_SPEED_FULL or _LOW */
 			/* For low-speed, 10 ms is the official minimum.
@@ -423,8 +436,12 @@ static int usb_parse_configuration(struct usb_device *dev, int cfgidx,
 	unsigned iad_num = 0;
 
 	memcpy(&config->desc, buffer, USB_DT_CONFIG_SIZE);
+	nintf = nintf_orig = config->desc.bNumInterfaces;
+	config->desc.bNumInterfaces = 0;	// Adjusted later
+
 	if (config->desc.bDescriptorType != USB_DT_CONFIG ||
-	    config->desc.bLength < USB_DT_CONFIG_SIZE) {
+	    config->desc.bLength < USB_DT_CONFIG_SIZE ||
+	    config->desc.bLength > size) {
 		dev_err(ddev, "invalid descriptor for config index %d: "
 		    "type = 0x%X, length = %d\n", cfgidx,
 		    config->desc.bDescriptorType, config->desc.bLength);
@@ -435,7 +452,6 @@ static int usb_parse_configuration(struct usb_device *dev, int cfgidx,
 	buffer += config->desc.bLength;
 	size -= config->desc.bLength;
 
-	nintf = nintf_orig = config->desc.bNumInterfaces;
 	if (nintf > USB_MAXINTERFACES) {
 		dev_warn(ddev, "config %d has too many interfaces: %d, "
 		    "using maximum allowed: %d\n",
@@ -510,15 +526,23 @@ static int usb_parse_configuration(struct usb_device *dev, int cfgidx,
 
 		} else if (header->bDescriptorType ==
 				USB_DT_INTERFACE_ASSOCIATION) {
+			struct usb_interface_assoc_descriptor *d;
+
+			d = (struct usb_interface_assoc_descriptor *)header;
+			if (d->bLength < USB_DT_INTERFACE_ASSOCIATION_SIZE) {
+				dev_warn(ddev,
+					 "config %d has an invalid interface association descriptor of length %d, skipping\n",
+					 cfgno, d->bLength);
+				continue;
+			}
+
 			if (iad_num == USB_MAXIADS) {
 				dev_warn(ddev, "found more Interface "
 					       "Association Descriptors "
 					       "than allocated for in "
 					       "configuration %d\n", cfgno);
 			} else {
-				config->intf_assoc[iad_num] =
-					(struct usb_interface_assoc_descriptor
-					*)header;
+				config->intf_assoc[iad_num] = d;
 				iad_num++;
 			}
 
@@ -650,10 +674,6 @@ void usb_destroy_configuration(struct usb_device *dev)
  *
  * hub-only!! ... and only in reset path, or usb_new_device()
  * (used by real hubs and virtual root hubs)
- *
- * NOTE: if this is a WUSB device and is not authorized, we skip the
- *       whole thing. A non-authorized USB device has no
- *       configurations.
  */
 int usb_get_configuration(struct usb_device *dev)
 {
@@ -665,8 +685,6 @@ int usb_get_configuration(struct usb_device *dev)
 	struct usb_config_descriptor *desc;
 
 	cfgno = 0;
-	if (dev->authorized == 0)	/* Not really an error */
-		goto out_not_authorized;
 	result = -ENOMEM;
 	if (ncfg > USB_MAXCONFIG) {
 		dev_warn(ddev, "too many configurations: %d, "
@@ -748,7 +766,6 @@ int usb_get_configuration(struct usb_device *dev)
 
 err:
 	kfree(desc);
-out_not_authorized:
 	dev->descriptor.bNumConfigurations = cfgno;
 err2:
 	if (result == -ENOMEM)
@@ -820,10 +837,12 @@ int usb_get_bos_descriptor(struct usb_device *dev)
 	for (i = 0; i < num; i++) {
 		buffer += length;
 		cap = (struct usb_dev_cap_header *)buffer;
-		length = cap->bLength;
 
-		if (total_len < length)
+		if (total_len < sizeof(*cap) || total_len < cap->bLength) {
+			dev->bos->desc->bNumDeviceCaps = i;
 			break;
+		}
+		length = cap->bLength;
 		total_len -= length;
 
 		if (cap->bDescriptorType != USB_DT_DEVICE_CAPABILITY) {

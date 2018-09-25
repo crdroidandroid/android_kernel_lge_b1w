@@ -28,10 +28,6 @@
 #include <linux/debugfs.h>
 #include <linux/kmemleak.h>
 
-#ifdef CONFIG_USB_G_LGE_ANDROID_DIAG_OSP_SUPPORT
-#include "../../char/diag/diagchar.h"
-#endif
-
 static DEFINE_SPINLOCK(ch_lock);
 static LIST_HEAD(usb_diag_ch_list);
 
@@ -248,23 +244,13 @@ static void diag_write_complete(struct usb_ep *ep,
 		ctxt->ch->notify(ctxt->ch->priv, USB_DIAG_WRITE_DONE, d_req);
 }
 
-#ifdef CONFIG_USB_G_LGE_ANDROID_DIAG_OSP_SUPPORT
-#define DIAG_OSP_TYPE 0xf7
-#endif
 static void diag_read_complete(struct usb_ep *ep,
 		struct usb_request *req)
 {
 	struct diag_context *ctxt = ep->driver_data;
 	struct diag_request *d_req = req->context;
 	unsigned long flags;
-#ifdef CONFIG_USB_G_LGE_ANDROID_DIAG_OSP_SUPPORT
-	struct diagchar_dev *driver = ctxt->ch->priv;
 
-	if (((unsigned char *)(d_req->buf))[0] == DIAG_OSP_TYPE)
-		driver->diag_read_status = 0;
-	else
-		driver->diag_read_status = 1;
-#endif
 	d_req->actual = req->actual;
 	d_req->status = req->status;
 
@@ -438,16 +424,6 @@ int usb_diag_read(struct usb_diag_ch *ch, struct diag_request *d_req)
 	unsigned long flags;
 	struct usb_request *req;
 	static DEFINE_RATELIMIT_STATE(rl, 10*HZ, 1);
-#ifdef CONFIG_USB_G_LGE_ANDROID_DIAG_OSP_SUPPORT
-	struct diagchar_dev *driver = ch->priv;
-
-	if (!driver)
-		return -ENODEV;
-
-	wait_event_interruptible_timeout(driver->diag_read_wait_q,
-			driver->diag_read_status, 1*HZ);
-	ctxt = ch->priv_usb;
-#endif
 
 	if (!ctxt)
 		return -ENODEV;
@@ -638,7 +614,7 @@ static void diag_function_unbind(struct usb_configuration *c,
 	if (gadget_is_dualspeed(c->cdev->gadget))
 		usb_free_descriptors(f->hs_descriptors);
 
-	usb_free_descriptors(f->descriptors);
+	usb_free_descriptors(f->fs_descriptors);
 
 	/*
 	 * Channel priv_usb may point to other diag function.
@@ -679,8 +655,8 @@ static int diag_function_bind(struct usb_configuration *c,
 
 	status = -ENOMEM;
 	/* copy descriptors, and track endpoint copies */
-	f->descriptors = usb_copy_descriptors(fs_diag_desc);
-	if (!f->descriptors)
+	f->fs_descriptors = usb_copy_descriptors(fs_diag_desc);
+	if (!f->fs_descriptors)
 		goto fail;
 
 	if (gadget_is_dualspeed(c->cdev->gadget)) {
@@ -713,8 +689,8 @@ fail:
 		usb_free_descriptors(f->ss_descriptors);
 	if (f->hs_descriptors)
 		usb_free_descriptors(f->hs_descriptors);
-	if (f->descriptors)
-		usb_free_descriptors(f->descriptors);
+	if (f->fs_descriptors)
+		usb_free_descriptors(f->fs_descriptors);
 	if (ctxt->out)
 		ctxt->out->driver_data = NULL;
 	if (ctxt->in)
@@ -760,7 +736,7 @@ int diag_function_add(struct usb_configuration *c, const char *name,
 	dev->update_pid_and_serial_num = update_pid;
 	dev->cdev = c->cdev;
 	dev->function.name = _ch->name;
-	dev->function.descriptors = fs_diag_desc;
+	dev->function.fs_descriptors = fs_diag_desc;
 	dev->function.hs_descriptors = hs_diag_desc;
 	dev->function.bind = diag_function_bind;
 	dev->function.unbind = diag_function_unbind;

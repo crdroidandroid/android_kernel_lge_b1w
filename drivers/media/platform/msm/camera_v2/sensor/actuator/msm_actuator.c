@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -79,19 +79,29 @@ static int32_t msm_actuator_piezo_set_default_focus(
 static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 	int16_t next_lens_position, uint32_t hw_params, uint16_t delay)
 {
-	struct msm_actuator_reg_params_t *write_arr = a_ctrl->reg_tbl;
+	struct msm_actuator_reg_params_t *write_arr = NULL;
 	uint32_t hw_dword = hw_params;
 	uint16_t i2c_byte1 = 0, i2c_byte2 = 0;
 	uint16_t value = 0;
-	uint32_t size = a_ctrl->reg_tbl_size, i = 0;
+	uint32_t size = 0, i = 0;
 	struct msm_camera_i2c_reg_array *i2c_tbl = a_ctrl->i2c_reg_tbl;
 	CDBG("Enter\n");
+
+	if (a_ctrl == NULL) {
+		pr_err("failed. actuator ctrl is NULL");
+		return;
+	}
+
+	if (a_ctrl->i2c_reg_tbl == NULL) {
+		pr_err("failed. i2c reg tabl is NULL");
+		return;
+	}
+
+	size = a_ctrl->reg_tbl_size;
+	write_arr = a_ctrl->reg_tbl;
+	i2c_tbl = a_ctrl->i2c_reg_tbl;
+
 	for (i = 0; i < size; i++) {
-		/* check that the index into i2c_tbl cannot grow larger that
-		the allocated size of i2c_tbl */
-		if ((a_ctrl->total_steps + 1) < (a_ctrl->i2c_tbl_index)) {
-			break;
-		}
 		if (write_arr[i].reg_write_type == MSM_ACTUATOR_WRITE_DAC) {
 			value = (next_lens_position <<
 				write_arr[i].data_shift) |
@@ -108,6 +118,11 @@ static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 					i2c_byte2 = value & 0xFF;
 					CDBG("byte1:0x%x, byte2:0x%x\n",
 						i2c_byte1, i2c_byte2);
+					if (a_ctrl->i2c_tbl_index >
+						a_ctrl->total_steps) {
+						pr_err("failed:i2c table index out of bound\n");
+						break;
+					}
 					i2c_tbl[a_ctrl->i2c_tbl_index].
 						reg_addr = i2c_byte1;
 					i2c_tbl[a_ctrl->i2c_tbl_index].
@@ -144,6 +159,10 @@ static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 			i2c_byte1 = write_arr[i].reg_addr;
 			i2c_byte2 = (hw_dword & write_arr[i].hw_mask) >>
 				write_arr[i].hw_shift;
+		}
+		if (a_ctrl->i2c_tbl_index > a_ctrl->total_steps) {
+			pr_err("failed: i2c table index out of bound\n");
+			break;
 		}
 		CDBG("i2c_byte1:0x%x, i2c_byte2:0x%x\n", i2c_byte1, i2c_byte2);
 		i2c_tbl[a_ctrl->i2c_tbl_index].reg_addr = i2c_byte1;
@@ -292,8 +311,11 @@ static int32_t msm_actuator_piezo_move_focus(
 		return -EFAULT;
 	}
 
-	if (num_steps == 0)
-		return rc;
+	if (num_steps <= 0 || num_steps > MAX_NUMBER_OF_STEPS) {
+		pr_err("num_steps out of range = %d\n",
+			num_steps);
+		return -EFAULT;
+	}
 
 	a_ctrl->i2c_tbl_index = 0;
 	a_ctrl->func_tbl->actuator_parse_i2c_params(a_ctrl,
@@ -681,8 +703,18 @@ static int32_t msm_actuator_set_position(
 	uint32_t hw_params = 0;
 	struct msm_camera_i2c_reg_setting reg_setting;
 	CDBG("%s Enter %d\n", __func__, __LINE__);
-	if (set_pos->number_of_steps  == 0)
-		return rc;
+	if (set_pos->number_of_steps <= 0 ||
+		set_pos->number_of_steps > MAX_NUMBER_OF_STEPS) {
+		pr_err("num_steps out of range = %d\n",
+			set_pos->number_of_steps);
+		return -EFAULT;
+	}
+
+	if (!a_ctrl || !a_ctrl->func_tbl ||
+		!a_ctrl->func_tbl->actuator_parse_i2c_params) {
+		pr_err("failed. NULL actuator pointers.");
+		return -EFAULT;
+	}
 
 	a_ctrl->i2c_tbl_index = 0;
 	for (index = 0; index < set_pos->number_of_steps; index++) {
@@ -748,10 +780,12 @@ static int32_t msm_actuator_init(struct msm_actuator_ctrl_t *a_ctrl,
 	a_ctrl->total_steps = set_info->af_tuning_params.total_steps;
 
 	if (copy_from_user(&a_ctrl->region_params,
-		(void *)set_info->af_tuning_params.region_params,
-		a_ctrl->region_size * sizeof(struct region_params_t)))
+			   (void*)set_info->af_tuning_params.region_params,
+			   a_ctrl->region_size * sizeof(struct region_params_t))) {
+		a_ctrl->total_steps = 0;
+		pr_err("Error copying region_params\n");
 		return -EFAULT;
-
+	}
 	if (a_ctrl->act_device_type == MSM_CAMERA_PLATFORM_DEVICE) {
 		cci_client = a_ctrl->i2c_client.cci_client;
 		cci_client->sid =
@@ -1158,7 +1192,7 @@ static long msm_actuator_subdev_ioctl(struct v4l2_subdev *sd,
 	struct msm_actuator_ctrl_t *a_ctrl = v4l2_get_subdevdata(sd);
 	void __user *argp = (void __user *)arg;
 	CDBG("Enter\n");
-	CDBG("%s:%d a_ctrl %p argp %p\n", __func__, __LINE__, a_ctrl, argp);
+	CDBG("%s:%d a_ctrl %pK argp %pK\n", __func__, __LINE__, a_ctrl, argp);
 	switch (cmd) {
 	case VIDIOC_MSM_SENSOR_GET_SUBDEV_ID:
 		return msm_actuator_get_subdev_id(a_ctrl, argp);
